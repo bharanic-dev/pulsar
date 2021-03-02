@@ -452,6 +452,21 @@
           </execution>
         </executions>
       </plugin>
+      <plugin>
+        <groupId>com.github.splunk.lightproto</groupId>
+        <artifactId>lightproto-maven-plugin</artifactId>
+        <version>${lightproto-maven-plugin.version}</version>
+        <configuration>
+          <sources>${project.basedir}/src/main/proto/ResourceUsage.proto</sources>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>generate</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
 
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -472,6 +487,7 @@
         <configuration>
           <protocArtifact>com.google.protobuf:protoc:${protoc3.version}:exe:${os.detected.classifier}</protocArtifact>
           <checkStaleness>true</checkStaleness>
+          <excludes>**/ResourceUsage.proto</excludes>
         </configuration>
         <executions>
           <execution>
