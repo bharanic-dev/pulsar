@@ -18,15 +18,21 @@
  */
 package org.apache.pulsar.broker.resourcegroup;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
+
+import lombok.Getter;
 import org.apache.pulsar.broker.resourcegroup.ResourceGroupService.ResourceGroupOpStatus;
 import org.apache.pulsar.broker.service.resource.usage.NetworkUsage;
 import org.apache.pulsar.broker.service.resource.usage.ResourceUsage;
 import org.apache.pulsar.client.admin.PulsarAdminException;
+import org.apache.pulsar.common.util.RateLimitFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,7 +46,15 @@ import org.slf4j.LoggerFactory;
  * same RG across all of the monitoring classes it uses (Publish/Dispatch/...), instead of referencing one RG for
  * publish, another one for dispatch, etc.
  */
-public class ResourceGroup {
+public class ResourceGroup implements RateLimitFunction {
+
+    @Override
+    public void apply() {
+        for (Map.Entry<String, RateLimitFunction> f: rateLimitFunctionMap.entrySet()) {
+            f.getValue().apply();
+        }
+    }
+
     /**
      * Convenience class for bytes and messages counts, which are used together in a lot of the following code.
      */
@@ -77,6 +91,9 @@ public class ResourceGroup {
         this.setResourceGroupMonitoringClassFields();
         this.setResourceGroupConfigParameters(rgConfig);
         this.setDefaultResourceUsageTransportHandlers();
+        this.resourceGroupPublishLimiter = new ResourceGroupPublishLimiter(rgConfig, this::apply);
+        log.info("attaching publish rate limiter {} to {} get {}", this.resourceGroupPublishLimiter.toString(), name,
+          this.getResourceGroupPublishLimiter());
     }
 
     // ctor for overriding the transport-manager fill/set buffer.
@@ -98,6 +115,7 @@ public class ResourceGroup {
     public ResourceGroup(ResourceGroup other) {
         this.resourceGroupName = other.resourceGroupName;
         this.rgs = other.rgs;
+        this.resourceGroupPublishLimiter = other.resourceGroupPublishLimiter;
         this.setResourceGroupMonitoringClassFields();
 
         // ToDo: copy the monitoring class fields, and ruPublisher/ruConsumer from other, if required.
@@ -134,6 +152,13 @@ public class ResourceGroup {
         this.setResourceGroupConfigParameters(rgConfig);
     }
 
+    public void registerRateLimitFunction(String name, RateLimitFunction func) {
+        rateLimitFunctionMap.put(name, func);
+    }
+
+    public void unregisterRateLimitFunction(String name) {
+        rateLimitFunctionMap.remove(name);
+    }
     protected long getResourceGroupNumOfNSRefs() {
         return this.resourceGroupNamespaceRefs.size();
     }
@@ -477,6 +502,12 @@ public class ResourceGroup {
 
     // The creator resource-group-service [ToDo: remove later with a strict singleton ResourceGroupService]
     ResourceGroupService rgs;
+
+    // Publish rate limiter for the resource group
+    @Getter
+    protected ResourceGroupPublishLimiter resourceGroupPublishLimiter;
+
+    ConcurrentHashMap<String, RateLimitFunction> rateLimitFunctionMap = new ConcurrentHashMap<>();
 
     protected static class PerMonitoringClassFields {
         // This lock covers all the "local" counts (i.e., except for the per-broker usage stats).

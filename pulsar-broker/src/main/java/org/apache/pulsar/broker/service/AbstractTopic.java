@@ -21,6 +21,8 @@ package org.apache.pulsar.broker.service;
 import static com.google.common.base.Preconditions.checkArgument;
 import static org.apache.bookkeeper.mledger.impl.ManagedLedgerMBeanImpl.ENTRY_LATENCY_BUCKETS_USEC;
 import static org.apache.pulsar.broker.cache.ConfigurationCacheService.POLICIES;
+import static org.apache.pulsar.broker.web.PulsarWebResource.path;
+
 import com.google.common.base.MoreObjects;
 import java.util.List;
 import java.util.Map;
@@ -35,10 +37,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+
+import lombok.Getter;
 import org.apache.bookkeeper.mledger.util.StatsBuckets;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.pulsar.broker.ServiceConfiguration;
 import org.apache.pulsar.broker.admin.AdminResource;
+import org.apache.pulsar.broker.resourcegroup.ResourceGroup;
+import org.apache.pulsar.broker.resourcegroup.ResourceGroupPublishLimiter;
 import org.apache.pulsar.broker.service.BrokerServiceException.ConsumerBusyException;
 import org.apache.pulsar.broker.service.BrokerServiceException.ProducerBusyException;
 import org.apache.pulsar.broker.service.BrokerServiceException.ProducerFencedException;
@@ -56,6 +62,7 @@ import org.apache.pulsar.common.policies.data.TopicPolicies;
 import org.apache.pulsar.common.protocol.schema.SchemaData;
 import org.apache.pulsar.common.protocol.schema.SchemaVersion;
 import org.apache.pulsar.common.util.FutureUtil;
+import org.apache.pulsar.metadata.api.MetadataStoreException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -104,6 +111,11 @@ public abstract class AbstractTopic implements Topic {
     protected volatile PublishRateLimiter topicPublishRateLimiter;
 
     protected boolean preciseTopicPublishRateLimitingEnable;
+
+    @Getter
+    protected boolean resourceGroupRateLimitingEnabled;
+
+    protected volatile ResourceGroupPublishLimiter resourceGroupPublishLimiter;
 
     private LongAdder bytesInCounter = new LongAdder();
     private LongAdder msgInCounter = new LongAdder();
@@ -746,6 +758,16 @@ public abstract class AbstractTopic implements Topic {
     }
 
     @Override
+    public boolean isResourceGroupPublishRateExceeded(int numMessages, int bytes) {
+        return this.resourceGroupRateLimitingEnabled && this.resourceGroupPublishLimiter.tryAcquire(numMessages, bytes);
+    }
+
+    @Override
+    public boolean isResourceGroupRateLimitingEnabled() {
+        return this.resourceGroupRateLimitingEnabled;
+    }
+
+    @Override
     public boolean isTopicPublishRateExceeded(int numberMessages, int bytes) {
         // whether topic publish rate exceed if precise rate limit is enable
         return preciseTopicPublishRateLimitingEnable && !this.topicPublishRateLimiter.tryAcquire(numberMessages, bytes);
@@ -785,16 +807,36 @@ public abstract class AbstractTopic implements Topic {
                 ? policies.publishMaxMessageRate.get(clusterName)
                 : null;
 
-        //both namespace-level and topic-level policy are not set, try to use broker-level policy
-        ServiceConfiguration serviceConfiguration = brokerService.pulsar().getConfiguration();
-        if (publishRate == null) {
-            PublishRate brokerPublishRate = new PublishRate(serviceConfiguration.getMaxPublishRatePerTopicInMessages()
-                    , serviceConfiguration.getMaxPublishRatePerTopicInBytes());
-            updatePublishDispatcher(brokerPublishRate);
+        //publishRate is not null , use namespace-level policy
+        if (publishRate != null) {
+            updatePublishDispatcher(publishRate);
             return;
         }
-        //publishRate is not null , use namespace-level policy
-        updatePublishDispatcher(publishRate);
+
+        // try resource-group level rate limiters, if set
+        String rgName = policies != null && policies.resource_group_name != null
+          ? policies.resource_group_name
+          : null;
+        if (rgName != null) {
+            final ResourceGroup resourceGroup =
+              brokerService.getPulsar().getResourceGroupServiceManager().resourceGroupGet(rgName);
+            if (resourceGroup != null) {
+                this.resourceGroupRateLimitingEnabled = true;
+                this.resourceGroupPublishLimiter = resourceGroup.getResourceGroupPublishLimiter();
+                resourceGroup.registerRateLimitFunction(this.getName(), () -> this.enableCnxAutoRead());
+                log.info("Using resource group {} rate limiter for topic {}", rgName, topic);
+                return;
+            }
+        } else {
+            /* Namespace detached from resource group. Enable the producer read */
+            enableProducerReadForPublishRateLimiting();
+        }
+
+        // topic-policy, namespace-level and resource-group rate limiters are not set, try to use broker-level policy
+        ServiceConfiguration serviceConfiguration = brokerService.pulsar().getConfiguration();
+        PublishRate brokerPublishRate = new PublishRate(serviceConfiguration.getMaxPublishRatePerTopicInMessages()
+          , serviceConfiguration.getMaxPublishRatePerTopicInBytes());
+        updatePublishDispatcher(brokerPublishRate);
     }
 
     public long getMsgInCounter() {
