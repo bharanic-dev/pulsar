@@ -25,23 +25,24 @@ function getCliByVersion(){
     var minMinorVersion = 5
     var referenceLink = "/pulsar-admin"
     if (clientModule === "pulsar-client") {
-        minMinorVersion = 7
+        minMinorVersion = 8
         referenceLink = "/reference-cli-tools/#pulsar-client"
+    } else if(clientModule === "pulsar-perf") {
+        minMinorVersion = 8
+        referenceLink = "/reference-cli-tools/#pulsar-perf"
+    } else if(clientModule === "pulsar") {
+        minMinorVersion = 8
+        referenceLink = "/reference-cli-tools/#pulsar"
     }
-    if (clientModule === "pulsar-admin") {
-        if ((majorVersion == 2 && minorVersion <= minMinorVersion) || majorVersion === 1) {
-            if (version === latestVersion) {
-                window.location.href = "/docs/en" + referenceLink
-                return
-            } else {
-                window.location.href = "/docs/en/" + version + referenceLink
-                return
-            }
+    if ((majorVersion > 1 && minorVersion <= minMinorVersion) || majorVersion === 1) {
+        if (version === latestVersion) {
+            window.location.href = "/docs/en" + referenceLink
         } else {
-            version = parseInt(versions[0]) + "." + parseInt(versions[1]) + ".0"
-            window.location.href = "http://pulsar.apache.org/tools/ + " + clientModule + "/" + version + "-SNAPSHOT"
-            return
+            window.location.href = "/docs/en/" + version + referenceLink
         }
+    } else {
+        version = parseInt(versions[0]) + "." + parseInt(versions[1]) + ".0"
+        window.location.href = "http://pulsar.apache.org/tools/" + clientModule + "/" + version + "-SNAPSHOT"
     }
 }
 window.onload=getCliByVersion
